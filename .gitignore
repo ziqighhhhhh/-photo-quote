@@ -1,0 +1,10 @@
+﻿__pycache__/
+*.pyc
+temp/
+.env
+.streamlit/
+.DS_Store
+IMG_*.jpg
+*.jpeg
+1.png
+问题2.png
