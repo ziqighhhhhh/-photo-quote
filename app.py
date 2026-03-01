@@ -16,7 +16,7 @@ from typing import Any, Dict, Optional, Tuple
 import requests
 import streamlit as st
 from dotenv import load_dotenv
-from PIL import ExifTags, Image, ImageDraw, ImageEnhance, ImageFilter, ImageFont
+from PIL import ExifTags, Image, ImageDraw, ImageEnhance, ImageFilter, ImageFont, ImageOps
 import qrcode
 
 
@@ -509,6 +509,13 @@ def parse_exif(img: Image.Image) -> Dict[str, Any]:
     return exif_data
 
 
+def load_image_with_exif(uploaded_bytes: bytes) -> Tuple[Image.Image, Dict[str, Any]]:
+    raw = Image.open(io.BytesIO(uploaded_bytes))
+    exif = parse_exif(raw)
+    oriented = ImageOps.exif_transpose(raw).convert("RGB")
+    return oriented, exif
+
+
 def convert_gps_to_decimal(gps_coord, gps_ref) -> Optional[float]:
     if not gps_coord or not gps_ref:
         return None
@@ -617,7 +624,7 @@ def resize_long_edge(img: Image.Image, long_edge: int) -> Image.Image:
 
 
 def prepare_vision_data_url(uploaded_bytes: bytes, mime_type: str) -> str:
-    img = Image.open(io.BytesIO(uploaded_bytes)).convert("RGB")
+    img, _ = load_image_with_exif(uploaded_bytes)
     img = resize_long_edge(img, VISION_LONG_EDGE)
     buf = io.BytesIO()
     img.save(buf, format="JPEG", quality=88, optimize=True)
@@ -1507,16 +1514,14 @@ def main() -> None:
                 st.session_state.autogen_done_sig = ""
                 st.session_state.autogen_attempted_sig = ""
             st.session_state.source_image_bytes = uploaded_bytes
-            img = Image.open(io.BytesIO(uploaded_bytes)).convert("RGB")
-            exif = parse_exif(img)
+            img, exif = load_image_with_exif(uploaded_bytes)
             auto_city, auto_country = reverse_location_from_gps(exif["gps"]) if exif["gps"] else ("", "")
             st.image(img, use_container_width=True)
         elif st.session_state.source_image_bytes:
             uploaded_bytes = st.session_state.source_image_bytes
             if not st.session_state.photo_hash and uploaded_bytes:
                 st.session_state.photo_hash = hashlib.md5(uploaded_bytes).hexdigest()
-            img = Image.open(io.BytesIO(uploaded_bytes)).convert("RGB")
-            exif = parse_exif(img)
+            img, exif = load_image_with_exif(uploaded_bytes)
             auto_city, auto_country = reverse_location_from_gps(exif["gps"]) if exif["gps"] else ("", "")
             st.image(img, use_container_width=True)
         else:
@@ -1585,8 +1590,7 @@ def main() -> None:
             if auto_should_run or manual_should_run:
                 st.session_state.autogen_attempted_hash = current_hash
                 st.session_state.autogen_attempted_sig = current_sig
-                source_img = Image.open(io.BytesIO(source_bytes)).convert("RGB")
-                source_exif = parse_exif(source_img)
+                source_img, source_exif = load_image_with_exif(source_bytes)
                 progress_holder = st.empty()
                 progress_text = st.empty()
                 bar = progress_holder.progress(0)
@@ -1672,7 +1676,7 @@ def main() -> None:
                 if not source_bytes:
                     st.error("原图不存在，请重新上传。")
                     st.stop()
-                source_img = Image.open(io.BytesIO(source_bytes)).convert("RGB")
+                source_img, _ = load_image_with_exif(source_bytes)
                 progress_holder = st.empty()
                 progress_text = st.empty()
                 bar = progress_holder.progress(0)
@@ -1745,7 +1749,7 @@ def main() -> None:
                 if not source_bytes:
                     st.error("原图不存在，请重新上传。")
                     st.stop()
-                source_img = Image.open(io.BytesIO(source_bytes)).convert("RGB")
+                source_img, _ = load_image_with_exif(source_bytes)
                 progress_holder = st.empty()
                 progress_text = st.empty()
                 bar = progress_holder.progress(0)
