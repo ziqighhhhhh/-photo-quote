@@ -41,12 +41,25 @@ HTTP_TIMEOUT = int(os.getenv("HTTP_TIMEOUT_SECONDS", "20"))
 OPENAI_RETRY_ATTEMPTS = max(1, int(os.getenv("OPENAI_RETRY_ATTEMPTS", "4")))
 OPENAI_RETRY_BACKOFF_SECONDS = float(os.getenv("OPENAI_RETRY_BACKOFF_SECONDS", "0.8"))
 
-FONT_CANDIDATES = [
+FONT_CANDIDATES_REGULAR = [
+    os.getenv("FONT_PATH_REGULAR", "").strip(),
     "C:/Windows/Fonts/msyh.ttc",
+    "C:/Windows/Fonts/simsun.ttc",
+    "C:/Windows/Fonts/simhei.ttf",
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/opentype/noto/NotoSerifCJK-Regular.ttc",
+    "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+    "/usr/share/fonts/truetype/arphic/uming.ttc",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+]
+FONT_CANDIDATES_BOLD = [
+    os.getenv("FONT_PATH_BOLD", "").strip(),
     "C:/Windows/Fonts/msyhbd.ttc",
     "C:/Windows/Fonts/simhei.ttf",
-    "C:/Windows/Fonts/simsun.ttc",
-    "C:/Windows/Fonts/arial.ttf",
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
+    "/usr/share/fonts/opentype/noto/NotoSerifCJK-Bold.ttc",
+    "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
 ]
 
 # Calibrated geo bounds for current world map background.
@@ -361,8 +374,10 @@ h2, h3{
 
 
 def get_font(size: int, bold: bool = False) -> ImageFont.ImageFont:
-    for p in FONT_CANDIDATES:
-        target = "C:/Windows/Fonts/msyhbd.ttc" if (bold and p.endswith("msyh.ttc")) else p
+    candidates = FONT_CANDIDATES_BOLD if bold else FONT_CANDIDATES_REGULAR
+    for target in candidates:
+        if not target:
+            continue
         try:
             return ImageFont.truetype(target, size=size)
         except Exception:
