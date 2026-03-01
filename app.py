@@ -1,4 +1,5 @@
-﻿import base64
+import base64
+import functools
 import hashlib
 import io
 import json
@@ -16,6 +17,7 @@ import requests
 import streamlit as st
 from dotenv import load_dotenv
 from PIL import ExifTags, Image, ImageDraw, ImageEnhance, ImageFilter, ImageFont
+import qrcode
 
 
 load_dotenv()
@@ -43,6 +45,8 @@ OPENAI_RETRY_BACKOFF_SECONDS = float(os.getenv("OPENAI_RETRY_BACKOFF_SECONDS", "
 
 FONT_CANDIDATES_REGULAR = [
     os.getenv("FONT_PATH_REGULAR", "").strip(),
+    str(APP_DIR / "public" / "fonts" / "NotoSansCJKsc-Regular.otf"),
+    str(APP_DIR / "public" / "fonts" / "NotoSansSC-Regular.ttf"),
     "C:/Windows/Fonts/msyh.ttc",
     "C:/Windows/Fonts/simsun.ttc",
     "C:/Windows/Fonts/simhei.ttf",
@@ -54,6 +58,8 @@ FONT_CANDIDATES_REGULAR = [
 ]
 FONT_CANDIDATES_BOLD = [
     os.getenv("FONT_PATH_BOLD", "").strip(),
+    str(APP_DIR / "public" / "fonts" / "NotoSansCJKsc-Bold.otf"),
+    str(APP_DIR / "public" / "fonts" / "NotoSansSC-Bold.ttf"),
     "C:/Windows/Fonts/msyhbd.ttc",
     "C:/Windows/Fonts/simhei.ttf",
     "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
@@ -61,6 +67,17 @@ FONT_CANDIDATES_BOLD = [
     "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
     "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
 ]
+FONT_CACHE_DIR = TEMP_DIR / "fonts"
+CJK_FONT_REMOTE = {
+    "regular": [
+        "https://cdn.jsdelivr.net/gh/notofonts/noto-cjk@main/Sans/OTF/SimplifiedChinese/NotoSansCJKsc-Regular.otf",
+        "https://raw.githubusercontent.com/notofonts/noto-cjk/main/Sans/OTF/SimplifiedChinese/NotoSansCJKsc-Regular.otf",
+    ],
+    "bold": [
+        "https://cdn.jsdelivr.net/gh/notofonts/noto-cjk@main/Sans/OTF/SimplifiedChinese/NotoSansCJKsc-Bold.otf",
+        "https://raw.githubusercontent.com/notofonts/noto-cjk/main/Sans/OTF/SimplifiedChinese/NotoSansCJKsc-Bold.otf",
+    ],
+}
 
 # Calibrated geo bounds for current world map background.
 MAP_LEFT_RATIO = float(os.getenv("MAP_LEFT_RATIO", "0.035"))
@@ -374,7 +391,12 @@ h2, h3{
 
 
 def get_font(size: int, bold: bool = False) -> ImageFont.ImageFont:
-    candidates = FONT_CANDIDATES_BOLD if bold else FONT_CANDIDATES_REGULAR
+    remote_regular, remote_bold = ensure_remote_cjk_fonts()
+    candidates = list(FONT_CANDIDATES_BOLD if bold else FONT_CANDIDATES_REGULAR)
+    if bold and remote_bold:
+        candidates.insert(0, remote_bold)
+    if (not bold) and remote_regular:
+        candidates.insert(0, remote_regular)
     for target in candidates:
         if not target:
             continue
@@ -383,6 +405,41 @@ def get_font(size: int, bold: bool = False) -> ImageFont.ImageFont:
         except Exception:
             continue
     return ImageFont.load_default()
+
+
+@functools.lru_cache(maxsize=1)
+def ensure_remote_cjk_fonts() -> Tuple[str, str]:
+    FONT_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    regular = _download_first_available_font(
+        CJK_FONT_REMOTE["regular"], FONT_CACHE_DIR / "NotoSansCJKsc-Regular.otf"
+    )
+    bold = _download_first_available_font(
+        CJK_FONT_REMOTE["bold"], FONT_CACHE_DIR / "NotoSansCJKsc-Bold.otf"
+    )
+    return regular, bold
+
+
+def _download_first_available_font(urls: list[str], dst: Path) -> str:
+    try:
+        if dst.exists() and dst.stat().st_size > 200_000:
+            return str(dst)
+    except OSError:
+        pass
+    for url in urls:
+        try:
+            resp = requests.get(url, timeout=HTTP_TIMEOUT)
+            if resp.status_code != 200:
+                continue
+            content = resp.content or b""
+            if len(content) < 200_000:
+                continue
+            if b"<html" in content[:512].lower():
+                continue
+            dst.write_bytes(content)
+            return str(dst)
+        except Exception:
+            continue
+    return str(dst) if dst.exists() else ""
 
 
 def init_state() -> None:
@@ -1093,20 +1150,15 @@ def call_quote_api(
 
 def generate_qr_image(session_id: str) -> Image.Image:
     data = "https://k6g7kqxcmstz6j7yc9f2cs.streamlit.app/"
-    size, cell, border = 29, 8, 2
-    img = Image.new("RGB", ((size + border * 2) * cell, (size + border * 2) * cell), "white")
-    draw = ImageDraw.Draw(img)
-    bits = "".join(f"{b:08b}" for b in data.encode("utf-8")) or "0"
-    idx = 0
-    for y in range(size):
-        for x in range(size):
-            if (x < 7 and y < 7) or (x >= size - 7 and y < 7) or (x < 7 and y >= size - 7):
-                continue
-            if bits[idx % len(bits)] == "1":
-                ox, oy = (x + border) * cell, (y + border) * cell
-                draw.rectangle((ox, oy, ox + cell - 1, oy + cell - 1), fill="black")
-            idx += 1
-    return img
+    qr = qrcode.QRCode(
+        version=None,
+        error_correction=qrcode.constants.ERROR_CORRECT_H,
+        box_size=12,
+        border=6,
+    )
+    qr.add_data(data)
+    qr.make(fit=True)
+    return qr.make_image(fill_color="black", back_color="white").convert("RGB")
 
 
 def image_fit(img: Image.Image, size: Tuple[int, int]) -> Image.Image:
@@ -1267,8 +1319,8 @@ def render_poster(
     content_margin = max(18, w // 64)
     text_w = int(panel_w * 0.56)
     text_h = int(panel_h * 0.64)
-    qr_size = max(110, min(int(panel_h * 0.34), int(panel_w * 0.22)))
-    qr_pad = max(12, w // 96)
+    qr_size = max(140, min(int(panel_h * 0.36), int(panel_w * 0.24)))
+    qr_pad = max(14, w // 90)
     qr_w, qr_h = qr_size + qr_pad * 2, qr_size + qr_pad * 2
 
     def rect_hits_pin(rect: Tuple[int, int, int, int], pad: int) -> bool:
@@ -1293,20 +1345,22 @@ def render_poster(
     valid_text = [r for r in text_candidates if not rect_hits_pin(r, pad=text_pin_pad)]
     text_card = valid_text[0] if valid_text else farthest_rect(text_candidates)
 
-    qr_candidates = [
-        (panel_x + content_margin, panel_y + content_margin, panel_x + content_margin + qr_w, panel_y + content_margin + qr_h),
-        (panel_x + panel_w - content_margin - qr_w, panel_y + content_margin, panel_x + panel_w - content_margin, panel_y + content_margin + qr_h),
-        (panel_x + content_margin, panel_y + panel_h - content_margin - qr_h, panel_x + content_margin + qr_w, panel_y + panel_h - content_margin),
-        (panel_x + panel_w - content_margin - qr_w, panel_y + panel_h - content_margin - qr_h, panel_x + panel_w - content_margin, panel_y + panel_h - content_margin),
-    ]
-    qr_pin_pad = max(38, w // 20)
-    valid_qr = [r for r in qr_candidates if not rect_hits_pin(r, pad=qr_pin_pad) and not rect_intersects(r, text_card)]
-    qr_card = valid_qr[0] if valid_qr else farthest_rect([r for r in qr_candidates if not rect_intersects(r, text_card)] or qr_candidates)
+    # QR is fixed to left-bottom for consistent layout.
+    qr_card = (
+        panel_x + content_margin,
+        panel_y + panel_h - content_margin - qr_h,
+        panel_x + content_margin + qr_w,
+        panel_y + panel_h - content_margin,
+    )
+    # Keep left-bottom intent while avoiding overlap with text card.
+    if rect_intersects(qr_card, text_card):
+        shift_up = (text_card[3] - qr_card[1]) + max(10, w // 80)
+        qr_card = (qr_card[0], qr_card[1] - shift_up, qr_card[2], qr_card[3] - shift_up)
 
     overlay = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
     odraw = ImageDraw.Draw(overlay)
     odraw.rounded_rectangle(text_card, radius=max(16, w // 70), fill=(250, 245, 236, 172), outline=(255, 251, 245, 186), width=2)
-    odraw.rounded_rectangle(qr_card, radius=max(14, w // 90), fill=(250, 245, 236, 176), outline=(255, 251, 245, 188), width=2)
+    odraw.rounded_rectangle(qr_card, radius=max(14, w // 90), fill=(255, 255, 255, 238), outline=(255, 255, 255, 248), width=2)
     canvas = Image.alpha_composite(canvas.convert("RGBA"), overlay).convert("RGB")
     draw = ImageDraw.Draw(canvas)
 
@@ -1337,7 +1391,9 @@ def render_poster(
         wm_font = get_font(max(18, w // 58), bold=True)
         for i in range(0, w, 240):
             for j in range(0, h, 190):
-                odraw.text((i, j), "PREVIEW", fill=(255, 255, 255, 72), font=wm_font)
+                bbox = draw.textbbox((i, j), "PREVIEW", font=wm_font)
+                if not rect_intersects((bbox[0], bbox[1], bbox[2], bbox[3]), qr_card):
+                    odraw.text((i, j), "PREVIEW", fill=(255, 255, 255, 72), font=wm_font)
         canvas = Image.alpha_composite(canvas.convert("RGBA"), overlay).convert("RGB")
         canvas = ImageEnhance.Sharpness(canvas).enhance(0.85)
 
