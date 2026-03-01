@@ -1092,7 +1092,7 @@ def call_quote_api(
 
 
 def generate_qr_image(session_id: str) -> Image.Image:
-    data = f"https://example.local/upload?src=qr&tpl=default&sid={session_id}"
+    data = "https://k6g7kqxcmstz6j7yc9f2cs.streamlit.app/"
     size, cell, border = 29, 8, 2
     img = Image.new("RGB", ((size + border * 2) * cell, (size + border * 2) * cell), "white")
     draw = ImageDraw.Draw(img)
