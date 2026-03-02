@@ -455,7 +455,7 @@ def init_state() -> None:
         "last_country": "",
         "last_date": "",
         "last_pin": None,
-        "last_style": "冰心风",
+        "last_style": "calm",
         "regen_serial": 0,
         "quote_source": "unknown",
         "quote_error": "",
@@ -667,9 +667,20 @@ def parse_json_or_fallback(raw: str, fallback: Dict[str, Any]) -> Dict[str, Any]
 
 
 def normalize_vision_result(data: Any) -> Dict[str, Any]:
-    """Normalize heterogeneous vision outputs into a stable schema."""
+    """Normalize heterogeneous vision outputs into a stable fact schema."""
     if not isinstance(data, dict):
-        return {"scene_tags": [], "mood": [], "objects": [], "short_caption": ""}
+        return {
+            "scene_type": "unknown",
+            "main_subjects": [],
+            "actions": [],
+            "setting": "unknown",
+            "key_objects": [],
+            "text_in_image": "unknown",
+            "visual_style": "unknown",
+            "emotions": [],
+            "color_tone": "unknown",
+            "quality_notes": [],
+        }
 
     def _listify(v: Any) -> list[str]:
         if isinstance(v, list):
@@ -678,7 +689,7 @@ def normalize_vision_result(data: Any) -> Dict[str, Any]:
             s = v.strip()
             if not s:
                 return []
-            parts = re.split(r"[，,、;；|/\n]+", s)
+            parts = re.split(r"[,，、;/\n]+", s)
             return [p.strip() for p in parts if p.strip()]
         return []
 
@@ -689,29 +700,50 @@ def normalize_vision_result(data: Any) -> Dict[str, Any]:
                 return v.strip()
         return ""
 
-    scene_tags = _listify(data.get("scene_tags") or data.get("tags") or data.get("scene") or data.get("scenes"))
-    mood = _listify(data.get("mood") or data.get("atmosphere") or data.get("tone"))
-    objects = _listify(data.get("objects") or data.get("entities") or data.get("items"))
-    short_caption = _first_str("short_caption", "caption", "description", "summary")
+    scene_type = _first_str("scene_type", "scene", "scene_category", "type") or "unknown"
+    main_subjects = _listify(data.get("main_subjects") or data.get("subjects") or data.get("main_objects"))
+    actions = _listify(data.get("actions") or data.get("activities"))
+    setting = _first_str("setting", "environment", "location_context") or "unknown"
+    key_objects = _listify(data.get("key_objects") or data.get("objects") or data.get("entities") or data.get("items"))
+    text_in_image = _first_str("text_in_image", "ocr_text", "text") or "unknown"
+    visual_style = _first_str("visual_style", "style") or "unknown"
+    emotions = _listify(data.get("emotions") or data.get("mood") or data.get("atmosphere") or data.get("tone"))
+    color_tone = _first_str("color_tone", "tone", "palette") or "unknown"
+    quality_notes = _listify(data.get("quality_notes") or data.get("notes") or data.get("quality"))
 
-    # Handle common Chinese key variants.
-    if not scene_tags:
-        scene_tags = _listify(data.get("场景标签") or data.get("场景") or data.get("标签"))
-    if not mood:
-        mood = _listify(data.get("氛围") or data.get("情绪"))
-    if not objects:
-        objects = _listify(data.get("物体") or data.get("主体") or data.get("元素"))
-    if not short_caption:
-        short_caption = _first_str("画面描述", "描述", "一句话描述")
+    if scene_type == "unknown":
+        scene_type = _first_str("sceneType", "category") or "unknown"
+    if not main_subjects:
+        main_subjects = _listify(data.get("subject") or data.get("subjects_list"))
+    if not actions:
+        actions = _listify(data.get("action") or data.get("action_list"))
+    if setting == "unknown":
+        setting = _first_str("environment_desc", "context") or "unknown"
+    if not key_objects:
+        key_objects = _listify(data.get("visible_items") or data.get("props"))
+    if text_in_image == "unknown":
+        text_in_image = _first_str("ocr", "image_text") or "unknown"
+    if visual_style == "unknown":
+        visual_style = _first_str("look_and_feel", "visual_tone") or "unknown"
+    if not emotions:
+        emotions = _listify(data.get("emotion") or data.get("feeling"))
+    if color_tone == "unknown":
+        color_tone = _first_str("main_color", "color_theme") or "unknown"
+    if not quality_notes:
+        quality_notes = _listify(data.get("issues") or data.get("quality_flags"))
 
     return {
-        "scene_tags": scene_tags[:8],
-        "mood": mood[:4],
-        "objects": objects[:8],
-        "short_caption": short_caption[:80],
+        "scene_type": scene_type[:32],
+        "main_subjects": main_subjects[:6],
+        "actions": actions[:6],
+        "setting": setting[:80],
+        "key_objects": key_objects[:10],
+        "text_in_image": text_in_image[:180],
+        "visual_style": visual_style[:80],
+        "emotions": emotions[:6],
+        "color_tone": color_tone[:48],
+        "quality_notes": quality_notes[:8],
     }
-
-
 def extract_message_text(content: Any) -> str:
     """Extract text from chat message content across string/list/dict variants."""
     if isinstance(content, str):
@@ -740,31 +772,39 @@ def extract_message_text(content: Any) -> str:
 
 
 def call_vision_api(cfg: ApiConfig, image_data_url: str) -> Dict[str, Any]:
+    fallback = {
+        "scene_type": "unknown",
+        "main_subjects": [],
+        "actions": [],
+        "setting": "unknown",
+        "key_objects": [],
+        "text_in_image": "unknown",
+        "visual_style": "unknown",
+        "emotions": [],
+        "color_tone": "unknown",
+        "quality_notes": [],
+    }
     if not cfg.enabled:
         st.session_state.vision_source = "fallback"
         st.session_state.vision_error = "Vision API config incomplete (base_url/api_key/model)."
         st.session_state.vision_model = cfg.model or ""
-        return {
-            "scene_tags": ["street", "night"],
-            "mood": ["quiet", "cinematic"],
-            "objects": ["people", "building"],
-            "short_caption": "夜色里，步伐与光影擦肩而过。",
-        }
+        return fallback
+
     payload = {
         "model": cfg.model,
         "messages": [
-            {"role": "system", "content": "You are a precise JSON-only vision analyzer."},
+            {"role": "system", "content": "You are a strict JSON-only image fact extractor."},
             {
                 "role": "user",
                 "content": [
                     {
                         "type": "text",
                         "text": (
-                            "Return strict JSON with keys: scene_tags, mood, objects, short_caption. "
-                            "scene_tags: 4-8 concrete scene keywords; "
-                            "mood: 2-4 atmosphere words; "
-                            "objects: 4-8 visible nouns; "
-                            "short_caption: one Chinese sentence (18-40 chars) describing visible details only."
+                            "你是图片内容结构化分析器。只根据图片可见信息输出，不要推测不可见内容。"
+                            "请仅输出 JSON（不要额外文字），字段必须为："
+                            "scene_type, main_subjects, actions, setting, key_objects, text_in_image, visual_style, emotions, color_tone, quality_notes。"
+                            "scene_type 仅允许：人像/产品/活动/风景/截图/室内/餐饮/其他。"
+                            "规则：不要品牌价值判断，不要写文案；不确定写 unknown 或空数组。"
                         ),
                     },
                     {"type": "image_url", "image_url": {"url": image_data_url}},
@@ -772,11 +812,10 @@ def call_vision_api(cfg: ApiConfig, image_data_url: str) -> Dict[str, Any]:
             },
         ],
         "temperature": 0.2,
-        "max_completion_tokens": 260,
+        "max_completion_tokens": 320,
     }
     try:
         resp = _post_openai_chat(cfg, payload)
-        # Backward compatibility for older chat-completions models.
         if resp.status_code == 400 and "max_completion_tokens" in payload:
             try:
                 body = (resp.text or "").lower()
@@ -785,9 +824,8 @@ def call_vision_api(cfg: ApiConfig, image_data_url: str) -> Dict[str, Any]:
             if "max_completion_tokens" in body and "unsupported" in body:
                 legacy_payload = dict(payload)
                 legacy_payload.pop("max_completion_tokens", None)
-                legacy_payload["max_tokens"] = 260
+                legacy_payload["max_tokens"] = 320
                 resp = _post_openai_chat(cfg, legacy_payload)
-        # Some models only support default temperature and reject custom values.
         if resp.status_code == 400 and "temperature" in payload:
             try:
                 body = (resp.text or "").lower()
@@ -797,35 +835,32 @@ def call_vision_api(cfg: ApiConfig, image_data_url: str) -> Dict[str, Any]:
                 no_temp_payload = dict(payload)
                 no_temp_payload.pop("temperature", None)
                 resp = _post_openai_chat(cfg, no_temp_payload)
+
         resp.raise_for_status()
         content = resp.json()["choices"][0]["message"].get("content")
         text = extract_message_text(content)
         if not text.strip():
             st.session_state.vision_source = "fallback"
-            st.session_state.vision_error = (
-                "Vision response is empty. The selected model may not support image input on this endpoint; "
-                "try a vision-capable model for VISION_MODEL (e.g. gpt-4.1-mini)."
-            )
+            st.session_state.vision_error = "Vision response is empty."
             st.session_state.vision_model = cfg.model
-            return {
-                "scene_tags": ["street", "night"],
-                "mood": ["quiet", "cinematic"],
-                "objects": ["people", "building"],
-                "short_caption": "夜色里，步伐与光影擦肩而过。",
-            }
-        parsed_raw = parse_json_or_fallback(text, {"scene_tags": [], "mood": [], "objects": [], "short_caption": ""})
+            return fallback
+
+        parsed_raw = parse_json_or_fallback(text, fallback)
         parsed = normalize_vision_result(parsed_raw)
-        has_detail = bool(parsed.get("scene_tags") or parsed.get("objects") or str(parsed.get("short_caption", "")).strip())
+        has_detail = bool(
+            parsed.get("scene_type") != "unknown"
+            or parsed.get("main_subjects")
+            or parsed.get("actions")
+            or parsed.get("setting") != "unknown"
+            or parsed.get("key_objects")
+            or parsed.get("text_in_image") != "unknown"
+        )
         if not has_detail:
             st.session_state.vision_source = "fallback"
             st.session_state.vision_error = f"Vision returned empty details. Raw: {str(text)[:180]}"
             st.session_state.vision_model = cfg.model
-            return {
-                "scene_tags": ["street", "night"],
-                "mood": ["quiet", "cinematic"],
-                "objects": ["people", "building"],
-                "short_caption": "夜色里，步伐与光影擦肩而过。",
-            }
+            return fallback
+
         st.session_state.vision_source = "api"
         st.session_state.vision_error = ""
         st.session_state.vision_model = cfg.model
@@ -841,102 +876,63 @@ def call_vision_api(cfg: ApiConfig, image_data_url: str) -> Dict[str, Any]:
         st.session_state.vision_source = "fallback"
         st.session_state.vision_error = err[:260]
         st.session_state.vision_model = cfg.model
-        return {
-            "scene_tags": ["street", "night"],
-            "mood": ["quiet", "cinematic"],
-            "objects": ["people", "building"],
-            "short_caption": "夜色里，步伐与光影擦肩而过。",
-        }
-
-
+        return fallback
 def auto_pick_style(vision: Dict[str, Any]) -> str:
-    tags = " ".join(vision.get("scene_tags", []) + vision.get("objects", [])).lower()
-    mood = " ".join(vision.get("mood", [])).lower()
-
-    food_keys = ["food", "restaurant", "meal", "kitchen", "drink", "coffee", "hotpot", "bbq", "noodle"]
-    work_keys = ["office", "computer", "meeting", "desk", "coworker", "company", "work"]
-    game_keys = ["game", "controller", "keyboard", "monitor", "esports", "arcade"]
-    night_keys = ["night", "late", "moon", "dark", "streetlight"]
-    single_keys = ["solo", "alone", "single", "portrait"]
-
-    joined = f"{tags} {mood}"
-    calm_hint = any(k in joined for k in ["calm", "quiet", "peaceful", "gentle", "soft", "warm"])
-    energetic_hint = any(k in joined for k in ["busy", "crowded", "party", "dynamic", "fast", "sport", "fun"])
-
-    def hit_count(keys: list[str]) -> int:
-        return sum(1 for k in keys if k in joined)
-
-    food_hits = hit_count(food_keys)
-    work_hits = hit_count(work_keys)
-    game_hits = hit_count(game_keys)
-    night_hits = hit_count(night_keys)
-    single_hits = hit_count(single_keys)
-
-    # Priority rule: prefer cinematic/healing first; switch to meme styles only with strong cues.
-    if calm_hint:
-        return "治愈慢调"
-    if food_hits >= 2:
-        return "干饭人专享版"
-    if work_hits >= 2 and energetic_hint:
-        return "职场阴阳怪气版"
-    if game_hits >= 2:
-        return "游戏人生篇"
-    if night_hits >= 2 and energetic_hint:
-        return "熬夜冠军宣言"
-    if single_hits >= 2:
-        return "单身贵族凡尔赛"
-    return "电影感"
+    text_blob = " ".join([
+        str(vision.get("scene_type", "")),
+        str(vision.get("setting", "")),
+        str(vision.get("visual_style", "")),
+        str(vision.get("color_tone", "")),
+        " ".join(vision.get("main_subjects", []) if isinstance(vision.get("main_subjects", []), list) else []),
+        " ".join(vision.get("actions", []) if isinstance(vision.get("actions", []), list) else []),
+        " ".join(vision.get("key_objects", []) if isinstance(vision.get("key_objects", []), list) else []),
+    ]).lower()
+    if any(k in text_blob for k in ["food", "drink", "餐", "咖啡", "奶茶", "火锅"]):
+        return "food"
+    if any(k in text_blob for k in ["office", "meeting", "work", "电脑", "办公", "会议"]):
+        return "work"
+    if any(k in text_blob for k in ["game", "电竞", "手柄", "键盘"]):
+        return "game"
+    if any(k in text_blob for k in ["night", "moon", "late", "夜", "暗"]):
+        return "night"
+    if any(k in text_blob for k in ["alone", "solo", "single", "独自", "一个人"]):
+        return "single"
+    if any(k in text_blob for k in ["calm", "quiet", "gentle", "安静", "柔和"]):
+        return "calm"
+    return "cinematic"
 
 
 def _style_prompt(style: str) -> str:
     prompts = {
-        "冰心风": "风格要求：以冰心散文气质写作，语言清澈、温柔含蓄，意象自然，情感真挚克制。",
-        "干饭人专享版": "风格要求：嘴馋、香气感、快乐，带轻幽默，不油腻。",
-        "职场阴阳怪气版": "风格要求：机灵轻讽刺，好笑但不攻击个人，不刻薄。",
-        "单身贵族凡尔赛": "风格要求：自嘲中带骄傲，像开玩笑地炫耀单身自由。",
-        "熬夜冠军宣言": "风格要求：夜猫子口吻，略夸张，有热血感。",
-        "游戏人生篇": "风格要求：游戏梗+现实反差，节奏利落，燃一点。",
-        "治愈慢调": "风格要求：温柔克制，留白感，读起来能慢下来。",
-        "电影感": "风格要求：画面感强，镜头感明确，节奏干净。",
+        "calm": "风格要求：克制、温和、留白，不夸张。",
+        "food": "风格要求：轻松、有食欲感、生活化表达。",
+        "work": "风格要求：理性、简洁、少量幽默但不过界。",
+        "game": "风格要求：节奏感更强，但不使用夸张承诺。",
+        "night": "风格要求：夜景氛围、镜头感、语言干净。",
+        "single": "风格要求：独处视角，自洽、不矫情。",
+        "cinematic": "风格要求：画面感明确，句子紧凑。",
     }
-    return prompts.get(style, prompts["冰心风"])
+    return prompts.get(style, prompts["calm"])
 
 
 def _vision_brief(vision: Dict[str, Any]) -> str:
     if not isinstance(vision, dict):
-        return "无"
-    parts = []
-    # Primary schema from call_vision_api: scene_tags, mood, objects, short_caption.
-    scene_tags = vision.get("scene_tags")
-    if isinstance(scene_tags, list) and scene_tags:
-        compact_tags = [str(t).strip() for t in scene_tags[:6] if str(t).strip()]
-        if compact_tags:
-            parts.append("scene_tags:" + ",".join(compact_tags))
-
-    mood = vision.get("mood")
-    if isinstance(mood, list) and mood:
-        compact_mood = [str(t).strip() for t in mood[:4] if str(t).strip()]
-        if compact_mood:
-            parts.append("mood:" + ",".join(compact_mood))
-
-    objects = vision.get("objects")
-    if isinstance(objects, list) and objects:
-        compact_objs = [str(t).strip() for t in objects[:6] if str(t).strip()]
-        if compact_objs:
-            parts.append("objects:" + ",".join(compact_objs))
-
-    short_caption = vision.get("short_caption")
-    if isinstance(short_caption, str) and short_caption.strip():
-        parts.append("caption:" + short_caption.strip())
-
-    # Backward compatible with any legacy keys.
-    for k in ("main_subject", "scene", "lighting", "weather", "action", "color_tone"):
-        v = vision.get(k)
-        if isinstance(v, str) and v.strip():
-            parts.append(f"{k}:{v.strip()}")
-    if not parts:
-        return "无"
-    return "；".join(parts)[:220]
+        return "{}"
+    return json.dumps(
+        {
+            "scene_type": str(vision.get("scene_type", "unknown") or "unknown"),
+            "main_subjects": vision.get("main_subjects", []) if isinstance(vision.get("main_subjects", []), list) else [],
+            "actions": vision.get("actions", []) if isinstance(vision.get("actions", []), list) else [],
+            "setting": str(vision.get("setting", "unknown") or "unknown"),
+            "key_objects": vision.get("key_objects", []) if isinstance(vision.get("key_objects", []), list) else [],
+            "text_in_image": str(vision.get("text_in_image", "unknown") or "unknown"),
+            "visual_style": str(vision.get("visual_style", "unknown") or "unknown"),
+            "emotions": vision.get("emotions", []) if isinstance(vision.get("emotions", []), list) else [],
+            "color_tone": str(vision.get("color_tone", "unknown") or "unknown"),
+            "quality_notes": vision.get("quality_notes", []) if isinstance(vision.get("quality_notes", []), list) else [],
+        },
+        ensure_ascii=False,
+    )
 
 
 def _build_quote_prompt(
@@ -956,19 +952,21 @@ def _build_quote_prompt(
             f"9) 变体序号：{variation_seed}\n"
         )
     return (
+        "你是资深文案策划。\n"
+        "只能使用下方 STEP1_JSON 中可直接支持的事实写文案，禁止无依据补充。\n"
         "任务：生成一条中文海报短句。\n"
         "硬性规则：\n"
-        "1) 只输出一句中文，不要换行，不要解释。\n"
+        "1) 只输出一句中文，不换行、不解释。\n"
         "2) 句长14-34字。\n"
-        "3) 禁止英文、emoji、#话题、引号、书名号、括号。\n"
-        "4) 要有可感知画面，不空泛，不鸡汤，不模板化。\n"
-        "5) 不编造具体人名、品牌、地点细节。\n"
-        "6) 必须紧扣视觉摘要，至少体现其中两项元素（场景/物体/氛围/动作）。\n"
-        "7) 不要只写抽象心情，优先写看得见的细节。\n"
+        "3) 禁止英文、emoji、话题、引号、书名号、括号。\n"
+        "4) 不写品牌价值判断，不写夸张词，不写不可见细节。\n"
+        "5) 内容优先引用主体/动作/场景/物体/图中文字/色调。\n"
+        "6) 事实不足时可保守表达，不要脑补。\n"
+        "7) 可选脑补区默认关闭。\n"
         f"{extra_rule}"
         f"风格：{style}\n"
         f"{style_req}\n"
-        f"输入信息：地点={location or '未知'}；日期={date_text or '未知'}；视觉摘要={scene}\n"
+        f"输入信息：地点={location or '未知'}；日期={date_text or '未知'}；STEP1_JSON={scene}\n"
         "输出：只给最终短句。"
     )
 
@@ -981,53 +979,46 @@ def _style_fallback_quote(
     previous_quote: str = "",
     variation_seed: int = 0,
 ) -> str:
+    location_txt = location or "未知地点"
+    date_txt = date_text or "这一天"
     samples = {
-        "冰心风": [
-            f"{date_text or '这一天'}在{location or '远方'}，风从树梢轻轻落下，心也在光里慢慢明亮。",
-            f"在{location or '远方'}的{date_text or '这一天'}，云影贴着街面缓缓走过，日子忽然温柔起来。",
-            f"{date_text or '这一天'}，我在{location or '远方'}看见晚光落进树叶，沉默也有了暖意。",
-            f"{location or '远方'}的{date_text or '这一天'}，风很轻，天很净，心事在暮色里慢慢放下。",
-            f"{date_text or '这一天'}经过{location or '远方'}，一束光掠过肩头，疲惫像潮水一样退远。",
+        "calm": [
+            f"{date_txt}在{location_txt}，光线很轻，脚步也慢了下来。",
+            f"{location_txt}的{date_txt}，风经过街角，画面安静而清楚。",
         ],
-        "干饭人专享版": [
-            f"{date_text or '今天'}在{location or '这座城'}，这一口香到上头，快乐值直接加满一整格。",
-            "别人秋天第一杯奶茶，我是本周第八杯，主打一个稳定发挥。",
+        "food": [
+            f"{date_txt}在{location_txt}，热气和香味把日常变得具体。",
+            "镜头里是食物与器皿，简单却很有生活感。",
         ],
-        "职场阴阳怪气版": [
-            "领导说年轻人要多吃苦，我当场点了苦瓜炒蛋表示积极响应。",
-            "上班摸鱼多年，切屏快捷键的手速已经快到只剩残影。",
+        "work": [
+            f"{location_txt}的{date_txt}，屏幕、桌面和节奏都很清晰。",
+            "画面里是工作现场，信息直接，没有多余修饰。",
         ],
-        "单身贵族凡尔赛": [
-            "朋友问我为何还单身，我说档期太满，先把自由过成限量版。",
-            "月老大概把我的红线拿去织秋裤了，我先穿暖再说。",
+        "game": [
+            "键盘与屏幕构成主画面，节奏紧凑，注意力集中。",
+            f"{date_txt}的{location_txt}，光源和动作让画面更有张力。",
         ],
-        "熬夜冠军宣言": [
-            "月亮不睡我不睡，凌晨三点我和灵感开了一场加时赛。",
-            "发现早睡秘诀是把手机扔客厅，而我半夜还是去把它捡回来。",
+        "night": [
+            "夜色和灯光把层次拉开，人物与街景同时入镜。",
+            f"{date_txt}在{location_txt}，暗部安静，亮部更有方向。",
         ],
-        "游戏人生篇": [
-            "现实里我唯唯诺诺，进了游戏我就是全队最硬的前排。",
-            "白天打工攒能量，晚上开黑上分，把压力全变成击杀播报。",
+        "single": [
+            "一个人的画面也很完整，动作和环境都在说话。",
+            f"{location_txt}的{date_txt}，主体明确，情绪克制。",
         ],
-        "治愈慢调": [f"在{location or '远方'}的{date_text or '这一天'}，晚风很轻，心也慢慢安静下来。"],
-        "电影感": [f"{date_text or '这一天'}在{location or '远方'}，光影掠过街角，沉默也有了对白。"],
+        "cinematic": [
+            "光影、主体和背景关系清楚，像一格被定格的镜头。",
+            f"{date_txt}在{location_txt}，元素不多，但叙事足够完整。",
+        ],
     }
-    arr = samples.get(style, samples["冰心风"])
+    arr = samples.get(style, samples["calm"])
     normalized = [sanitize_quote(x) for x in arr]
     prev = sanitize_quote(previous_quote) if previous_quote else ""
     candidates = [x for x in normalized if x != prev] if prev else normalized
     if not candidates:
-        # Force a different fallback when all samples collapse to the previous sentence.
-        forced = [
-            f"在{location or '远方'}的{date_text or '这一天'}，风声贴着黄昏走，心里忽然亮了一盏灯。",
-            f"{date_text or '这一天'}路过{location or '远方'}，云很低，光很软，旧事也变得轻了。",
-            f"{location or '远方'}的天色在{date_text or '这一天'}慢慢暗下去，我却在微风里安静下来。",
-        ]
-        candidates = [sanitize_quote(x) for x in forced if sanitize_quote(x) != prev] or normalized
+        candidates = normalized
     seed = abs(hash((location, date_text, style, json.dumps(vision, ensure_ascii=False), variation_seed, time.time_ns())))
     return candidates[seed % len(candidates)]
-
-
 def sanitize_quote(text: str) -> str:
     text = (text or "").strip()
     text = text.translate(str.maketrans({",": "，", ";": "；", ":": "：", "!": "！", "?": "？"}))
@@ -1352,14 +1343,14 @@ def render_poster(
     valid_text = [r for r in text_candidates if not rect_hits_pin(r, pad=text_pin_pad)]
     text_card = valid_text[0] if valid_text else farthest_rect(text_candidates)
 
-    # QR is fixed to left-bottom for consistent layout.
+    # QR is fixed to right-bottom for consistent layout.
     qr_card = (
-        panel_x + content_margin,
+        panel_x + panel_w - content_margin - qr_w,
         panel_y + panel_h - content_margin - qr_h,
-        panel_x + content_margin + qr_w,
+        panel_x + panel_w - content_margin,
         panel_y + panel_h - content_margin,
     )
-    # Keep left-bottom intent while avoiding overlap with text card.
+    # Keep right-bottom intent while avoiding overlap with text card.
     if rect_intersects(qr_card, text_card):
         shift_up = (text_card[3] - qr_card[1]) + max(10, w // 80)
         qr_card = (qr_card[0], qr_card[1] - shift_up, qr_card[2], qr_card[3] - shift_up)
@@ -1606,7 +1597,7 @@ def main() -> None:
                         st.session_state.preview_bytes = None
                         st.error(f"视觉识别失败，已跳过文案生成：{st.session_state.get('vision_error', '未知错误')}")
                         st.stop()
-                    style = "冰心风"
+                    style = "calm"
                     display_date = format_date_for_display(effective_date)
                     bar.progress(55)
                     progress_text.caption("进度 55%：解析地点信息")
